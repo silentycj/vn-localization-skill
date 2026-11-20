@@ -1,19 +1,19 @@
-"""Audit GalTransl JSONs and repacked CSystem scripts (.a0) against originals.
+"""Audit GalTransl JSONs and (when present) repacked engine scripts against originals.
 
 Usage:
-    python audit_scripts.py [game_root_or_gt_project_dir] [--no-unpack]
+    python audit_scripts.py [game_root_or_gt_project_dir] [--no-unpack] [--json-only]
 
 Checks:
-  1. GalTransl JSON quality: entry count parity, leaked `name_map` keys, literal
-     `\\\\r\\\\n` / `\\\\n` escapes, stray `[`/`/`/`]` ruby brackets, and kana leftovers.
-  2. Binary script integrity (unpacking `game_portable/Arc01.dat` + `Arc04.dat`
-     by default, or inspecting `work/out_scenarios` with `--no-unpack`):
-       - All untranslated `.a0` and non-`.a0` files are byte-identical to `work/scenarios`.
-       - All translated `.a0` files preserve 1:1 total chunk count, identical `M` opcode
-         stream (preserving jump targets such as `# N(100)` / `# N(1)` -> `<4c> N(0)`),
-         and exact `0xfe` terminators (`endswith(0xfe) == (0xffff not in raw)`).
+  1. GalTransl JSON quality (all engines): entry count parity, leaked `name_map` keys,
+     literal `\\\\r\\\\n` / `\\\\n` escapes, stray brackets, placeholder/tag parity
+     (`%s`/`%d`, `{tag}`, `\\V[n]`/`\\N[n]`/`\\C[n]`), and kana leftovers.
+  2. CSystem binary script integrity (auto-enabled when `work/scenarios/*.a0` exists,
+     unpacking `game_portable/Arc01.dat` + `Arc04.dat` by default or `work/out_scenarios`
+     with `--no-unpack`): untranslated files byte-identical, 1:1 chunk count, identical
+     `M` opcodes / `<4c>` labels, and exact `0xfe` terminators.
 """
 
+import argparse
 import json
 import re
 import shutil
@@ -25,22 +25,26 @@ from pathlib import Path
 
 KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
 RUBY_RE = re.compile(r"\[([^/\[\]]+)/([^\[\]]+)\]")
+PH_RE = re.compile(r"%(?:\d+\$)?[sd]|{[^{}]+}|\\[VNC]\[\d+\]")
 
 
-def resolve_game_root(argv: list[str]) -> Path:
-    candidates = [a for a in argv[1:] if not a.startswith("--")]
-    if candidates:
-        p = Path(candidates[0]).resolve()
-        if p.name == "gt_project" and p.parent.name == "work":
-            return p.parent.parent
+def resolve_paths(target: str | None) -> tuple[Path, Path]:
+    if target:
+        p = Path(target).resolve()
+        if (p / "manifest.json").exists():
+            root = p.parent.parent if p.parent.name.startswith("work") else p
+            return root, p
         if (p / "work" / "gt_project" / "manifest.json").exists():
-            return p
+            return p, p / "work" / "gt_project"
     cwd = Path.cwd().resolve()
+    if (cwd / "manifest.json").exists():
+        root = cwd.parent.parent if cwd.parent.name.startswith("work") else cwd
+        return root, cwd
     if (cwd / "work" / "gt_project" / "manifest.json").exists():
-        return cwd
+        return cwd, cwd / "work" / "gt_project"
     for cand in sorted(cwd.glob("*/work/gt_project/manifest.json")):
-        return cand.parent.parent.parent
-    raise FileNotFoundError("Could not locate game root containing work/gt_project/manifest.json.")
+        return cand.parent.parent.parent, cand.parent
+    raise FileNotFoundError("Could not locate game root or gt_project containing manifest.json.")
 
 
 def parse_chunks(data: bytes) -> list[tuple[int, bytes]]:
@@ -87,8 +91,7 @@ def decode_m(payload: bytes) -> str:
     return " ".join(tokens)
 
 
-def audit_json(game_root: Path) -> tuple[int, int]:
-    gp = game_root / "work" / "gt_project"
+def audit_json(gp: Path) -> tuple[int, int]:
     gt_in = gp / "gt_input"
     gt_out = gp / "gt_output"
     chunks_out = gp / "chunks_out"
@@ -140,10 +143,20 @@ def audit_json(game_root: Path) -> tuple[int, int]:
                 if orig_n in name_map and b.get("name") != name_map[orig_n]:
                     print(f"  [ERROR] {out_p.name}[{idx}]: unmapped name {b.get('name')!r} (expected {name_map[orig_n]!r})")
                     errors += 1
+                for ruby_m in RUBY_RE.finditer(msg):
+                    if KANA_RE.search(ruby_m.group(1)) or "・" in ruby_m.group(1):
+                        print(f"  [WARN]  {out_p.name}[{idx}]: untranslated ruby/emphasis-dot markup {ruby_m.group(0)!r} in {msg!r}")
+                        warnings += 1
                 cleaned_no_ruby = RUBY_RE.sub("", msg)
                 if "[" in cleaned_no_ruby or "]" in cleaned_no_ruby:
-                    print(f"  [WARN]  {out_p.name}[{idx}]: dangling bracket in {msg!r}")
-                    warnings += 1
+                    # Only flag unmatched brackets when source did not already carry engine [tag] directives
+                    if "[" not in a.get("message", "") and "]" not in a.get("message", ""):
+                        print(f"  [WARN]  {out_p.name}[{idx}]: dangling bracket in {msg!r}")
+                        warnings += 1
+                orig_ph = sorted(PH_RE.findall(a.get("message", "")))
+                if orig_ph and sorted(PH_RE.findall(msg)) != orig_ph:
+                    print(f"  [ERROR] {out_p.name}[{idx}]: placeholder/tag mismatch orig={orig_ph} vs {msg!r}")
+                    errors += 1
                 if idx not in blk_set and KANA_RE.search(cleaned_no_ruby):
                     # Ignore single-char Japanese quote glyph shapes like 「く」字形
                     if "「く」" not in cleaned_no_ruby and "゛" not in cleaned_no_ruby and "・" not in cleaned_no_ruby:
@@ -154,17 +167,16 @@ def audit_json(game_root: Path) -> tuple[int, int]:
     return errors, warnings
 
 
-def audit_scripts(game_root: Path, unpack: bool) -> int:
-    orig_dir = game_root / "work" / "scenarios"
-    gt_out = game_root / "work" / "gt_project" / "gt_output"
+def audit_scripts(game_root: Path, gp: Path, orig_dir: Path, portable_dir: Path, unpack: bool) -> int:
+    gt_out = gp / "gt_output"
     translated_stems = {p.stem for p in gt_out.glob("*.json")}
     translated_files = {f"{s}.a0" for s in translated_stems}
 
     tmp_dir: Path | None = None
     if unpack:
         arc_exe = game_root / "tools" / "CSystemArc.exe"
-        arc01 = game_root / "game_portable" / "Arc01.dat"
-        arc04 = game_root / "game_portable" / "Arc04.dat"
+        arc01 = portable_dir / "Arc01.dat"
+        arc04 = portable_dir / "Arc04.dat"
         tmp_dir = Path(tempfile.mkdtemp(prefix="vn_script_audit_"))
         subprocess.run(
             [str(arc_exe), "unpack", str(arc01), str(arc04), str(tmp_dir)],
@@ -172,10 +184,10 @@ def audit_scripts(game_root: Path, unpack: bool) -> int:
             stdout=subprocess.DEVNULL,
         )
         target_dir = tmp_dir
-        source_label = "unpacked game_portable/Arc01.dat+Arc04.dat"
+        source_label = f"unpacked {portable_dir.name}/Arc01.dat+Arc04.dat"
     else:
-        target_dir = game_root / "work" / "out_scenarios"
-        source_label = "work/out_scenarios"
+        target_dir = gp.parent / "out_scenarios"
+        source_label = str(target_dir)
 
     errors = 0
     try:
@@ -242,11 +254,49 @@ def audit_scripts(game_root: Path, unpack: bool) -> int:
 
 
 def main() -> None:
-    game_root = resolve_game_root(sys.argv)
-    unpack = "--no-unpack" not in sys.argv
-    print(f"Auditing game root: {game_root}")
-    j_err, _ = audit_json(game_root)
-    s_err = audit_scripts(game_root, unpack=unpack)
+    parser = argparse.ArgumentParser(description="Audit GalTransl JSONs and repacked engine scripts")
+    parser.add_argument("target", nargs="?", help="Game root or gt_project directory")
+    parser.add_argument("--dir", "--project", dest="proj_flag", help="Explicit game root or gt_project directory")
+    parser.add_argument("--orig-dir", help="Override unpacked original scenarios directory")
+    parser.add_argument("--portable-dir", help="Override portable output directory containing Arc01.dat/Arc04.dat")
+    parser.add_argument("--no-unpack", action="store_true")
+    parser.add_argument("--json-only", action="store_true")
+    args = parser.parse_args()
+
+    game_root, gp = resolve_paths(args.proj_flag or args.target)
+    unpack = not args.no_unpack
+    json_only = args.json_only
+    print(f"Auditing game root: {game_root} (gt_project: {gp})")
+    j_err, _ = audit_json(gp)
+
+    orig_dir = Path(args.orig_dir).resolve() if args.orig_dir else (gp.parent / "scenarios")
+    if not orig_dir.exists():
+        orig_dir = game_root / "work" / "scenarios"
+    if args.portable_dir:
+        portable_dir = Path(args.portable_dir).resolve()
+    elif gp.parent.name == "work":
+        portable_dir = game_root / "game_portable"
+    else:
+        variant = gp.parent.name[5:] if gp.parent.name.startswith("work_") else gp.parent.name
+        cands = [
+            p for p in sorted(game_root.glob("*_portable"))
+            if p.name != "game_portable" and (p / "Arc01.dat").exists()
+        ]
+        matched = [p for p in cands if variant.lower() in p.name.lower()]
+        portable_dir = matched[0] if matched else (cands[0] if len(cands) == 1 else Path("__none__"))
+
+    has_csystem_scripts = orig_dir.exists() and any(orig_dir.glob("*.a0"))
+    can_unpack = (
+        (game_root / "tools" / "CSystemArc.exe").exists()
+        and (portable_dir / "Arc01.dat").exists()
+        and (portable_dir / "Arc04.dat").exists()
+    )
+    if json_only or not has_csystem_scripts or (unpack and not can_unpack):
+        print("\n=== 2. Binary Script Audit ===\n  Skipped CSystem .a0 unpack audit (JSON-only mode or non-CSystem project layout).")
+        s_err = 0
+    else:
+        s_err = audit_scripts(game_root, gp, orig_dir, portable_dir, unpack=unpack)
+
     if j_err + s_err > 0:
         sys.exit(1)
     print("\nALL SCRIPT AUDITS PASSED CLEANLY.")

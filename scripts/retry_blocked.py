@@ -115,8 +115,8 @@ async def run_slice(task):
         "from Japanese to natural, idiomatic Simplified Chinese following humanizer-zh standards:\n"
         "1. Preserve ALL original facts, tone, emotion, agency, negatives and nuances—never omit, merge, summarize, or invent details.\n"
         "2. Avoid stiff translationese / AI-style phrasing: avoid stacked 「的」, excessive 「进行+动词」, unnecessary passive 「被」, or repetitive 「她/他」 sentence openings; use natural active verbs and authentic spoken Chinese dialogue matching each character's personality.\n"
-        "3. Keep dialogue quotes 「...」, inner thoughts （...）, ellipsis …… and dashes —— consistent with Simplified Chinese VN convention. Preserve any actual \\r\\n line breaks without escaping them as literal \\\\r\\\\n.\n"
-        "4. Strictly follow all fixed translations (Characters/人物, Items/道具, Locations/地点, Terms/专有名词) in the glossary below with zero variation. Either keep [reading/base] ruby markers intact for CJK bases or omit furigana cleanly without leaving stray brackets or losing meaning.\n"
+        "3. Keep dialogue quotes 「...」, inner thoughts （...）, ellipsis …… and dashes —— consistent with Simplified Chinese VN convention. Preserve any actual \\r\\n line breaks without escaping them as literal \\\\r\\\\n. Never leave Japanese hiragana or katakana (such as ぎ, ぎゃ, ぬ, ええ, っ) inside screams or sound effects—always render all cries and sfx into natural Chinese characters.\n"
+        "4. Strictly follow all fixed translations (Characters/人物, Items/道具, Locations/地点, Terms/专有名词) in the glossary below with zero variation. Keep all engine control tags/variables verbatim (such as [r], [l], [p], {w}, %s, %d, \\V[n], \\C[n], <...>), and either keep [reading/base] ruby markers intact for CJK bases or omit furigana cleanly without leaving stray brackets.\n"
         "5. Return via finish with `items` containing EXACTLY "
         f"{len(sl)} objects with matching `idx` (0..{len(sl)-1}). Include `name` ONLY on entries that originally have `name`.\n"
         f"{glossary_block}"
@@ -141,9 +141,13 @@ async def run_slice(task):
 
         cleaned = []
         for i, (src_e, dst_e) in enumerate(zip(sl, got)):
-            msg = str(dst_e.get("message", "")).strip().replace("\\r\\n", "\r\n")
-            if not msg:
-                return {"chunk": cname, "s": s, "e": e, "ok": False, "reason": f"empty_msg_at_{i}"}
+            raw_src = src_e["message"]
+            if not raw_src.strip():
+                msg = raw_src
+            else:
+                msg = str(dst_e.get("message", "")).strip().replace("\\r\\n", "\r\n")
+                if not msg:
+                    return {"chunk": cname, "s": s, "e": e, "ok": False, "reason": f"empty_msg_at_{i}"}
             out_e = {}
             if "name" in src_e:
                 raw_n = src_e["name"]
