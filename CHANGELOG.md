@@ -4,6 +4,20 @@ All notable changes to the **vn-localization** skill are documented in this file
 
 ---
 
+## [1.2.1] - 2026-11-20
+
+### Added & Changed
+- **Smart Batch Coalescing, Compact Payloads & Per-Batch Glossary Filtering** ([`scripts/translate_wave.py`](./scripts/translate_wave.py), [`scripts/api_translate_wave.py`](./scripts/api_translate_wave.py)):
+  - Added compact `idx\tspeaker\tmessage` input encoding (eliminating repeated JSON keys/indentation and omitting already-mapped speaker names in output), per-batch glossary/speaker filtering (injecting only terms appearing in the current batch), and 240-line / 16k-char smart coalescing (`coalesce_max_lines=240` in `run_workflow`; `--pack-lines 240 --pack-chars 16000` in API worker) plus automatic primary TM pre-fill and post-wave propagation.
+- **Natural SFX & H-Scene Sensual / Organ-Action Fidelity** ([`SKILL.md`](./SKILL.md), [`scripts/translate_wave.py`](./scripts/translate_wave.py), [`scripts/retry_blocked.py`](./scripts/retry_blocked.py)):
+  - Refined translation instructions to render Japanese kana SFX into idiomatic Chinese sound textures/cadence and preserve authentic Galgame H-scene tension, anatomical terminology, and visceral organ actions/reactions without medical flattening.
+- **Per-Line Refusal Leak Guard** ([`scripts/translate_wave.py`](./scripts/translate_wave.py), [`scripts/retry_blocked.py`](./scripts/retry_blocked.py)):
+  - Added `REFUSAL_RE` verification across every returned item so refusal strings (`Unable to fulfill`, `Prohibited Use`, etc.) can never silently overwrite `chunks_out/*.json`.
+- **Repository Hygiene** ([`.gitignore`](./.gitignore)):
+  - Added `.gitignore` excluding `__pycache__/`, `*.py[cod]`, `*api_keys*`, and `*quota_state*.json`.
+
+---
+
 ## [1.2.0] - 2026-11-20
 
 ### Added

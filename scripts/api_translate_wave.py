@@ -13,6 +13,7 @@ Usage:
 import argparse
 import concurrent.futures
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -152,6 +153,54 @@ def call_gemini(
         raise
 
 
+def filter_glossary_for_batch(orig: list[dict], glossary: str, name_map: dict[str, str]) -> str:
+    blob_parts = [e.get("name", "") for e in orig if e.get("name")] + [e["message"] for e in orig]
+    blob = "\n".join(blob_parts)
+    parts: list[str] = []
+
+    used_speakers = []
+    seen_spk = set()
+    for e in orig:
+        sp = e.get("name", "")
+        if sp and sp in name_map and sp not in seen_spk:
+            seen_spk.add(sp)
+            used_speakers.append(f"{sp}->{name_map[sp]}")
+    if used_speakers:
+        parts.append("Speakers: " + ", ".join(used_speakers))
+
+    if glossary:
+        kept_lines: list[str] = []
+        pending_header: str | None = None
+        for raw_line in glossary.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#") or (line.startswith("【") and line.endswith("】")):
+                pending_header = line
+                continue
+            src_part = re.split(r"\s*(?:->|=>|→|:|：|=)\s*", line.lstrip("-*• "), maxsplit=1)[0]
+            src_part = re.split(r"\s*[（(]", src_part, maxsplit=1)[0].strip()
+            tokens = [t.strip() for t in re.split(r"[/／、,，]", src_part) if len(t.strip()) >= 1]
+            if tokens and any(t in blob for t in tokens):
+                if pending_header:
+                    kept_lines.append(pending_header)
+                    pending_header = None
+                kept_lines.append(line)
+        if kept_lines:
+            parts.append("\n".join(kept_lines))
+
+    return "\n".join(parts)
+
+
+def encode_compact_payload(orig: list[dict]) -> str:
+    rows = []
+    for i, entry in enumerate(orig):
+        spk = str(entry.get("name", "")).replace("\t", " ").replace("\r", "").replace("\n", "")
+        msg = str(entry["message"]).replace("\t", "\\t").replace("\r", "\\r").replace("\n", "\\n")
+        rows.append(f"{i}\t{spk}\t{msg}")
+    return "\n".join(rows)
+
+
 def translate_lines(
     model: str,
     label: str,
@@ -161,25 +210,19 @@ def translate_lines(
     glossary: str,
     thinking_level: str | None = None,
 ) -> list[dict]:
-    numbered = []
-    for i, entry in enumerate(orig):
-        rec = {"idx": i, "message": entry["message"]}
-        if "name" in entry:
-            rec["name"] = entry["name"]
-        numbered.append(rec)
-
-    payload_text = json.dumps(numbered, ensure_ascii=False, indent=1)
-    glossary_block = f"{glossary}\n\n" if glossary else ""
+    payload_text = encode_compact_payload(orig)
+    filtered_glossary = filter_glossary_for_batch(orig, glossary, name_map)
+    glossary_block = f"GLOSSARY:\n{filtered_glossary}\n\n" if filtered_glossary else ""
     base_prompt = (
-        f"Translate Visual Novel script {label} (source {src_file}, {len(orig)} lines) "
-        "from Japanese to natural, idiomatic Simplified Chinese following humanizer-zh standards:\n"
-        "1. Preserve ALL original facts, tone, emotion, agency, negatives and nuances—never omit, merge, summarize, or invent details.\n"
-        "2. Avoid stiff translationese / AI-style phrasing: avoid stacked 「的」, excessive 「进行+动词」, unnecessary passive 「被」, or repetitive 「她/他」 sentence openings; use natural active verbs and authentic spoken Chinese dialogue matching each character's personality.\n"
-        "3. Keep dialogue quotes 「...」, inner thoughts （...）, ellipsis …… and dashes —— consistent with Simplified Chinese VN convention. Preserve any actual \\r\\n line breaks without escaping them as literal \\\\r\\\\n. Never leave Japanese hiragana or katakana (such as ぎ, ぎゃ, ぬ, ええ, っ) inside screams or sound effects—always render all cries and sfx into natural Chinese characters.\n"
-        "4. Strictly follow all fixed translations (Characters/人物, Items/道具, Locations/地点, Terms/专有名词) in the glossary below with zero variation. Keep all engine control tags/variables verbatim (such as [r], [l], [p], {w}, %s, %d, \\V[n], \\C[n], <...>), and either keep [reading/base] ruby markers intact for CJK bases or omit furigana cleanly without leaving stray brackets.\n"
-        f"5. Return JSON with `items` containing EXACTLY {len(orig)} objects with matching `idx` (0..{len(orig)-1}). Include `name` ONLY on entries that originally have `name`.\n"
+        f"Translate VN {label} ({src_file}, {len(orig)} lines) JP->Simplified Chinese (humanizer-zh):\n"
+        "1. Keep ALL facts, tone, emotion, agency, negatives & nuances verbatim; no omissions/merges/inventions.\n"
+        "2. Natural spoken Chinese matching speaker voice; avoid stacked 「的」, 「进行+V」, stiff 「被」, repetitive 「她/他」.\n"
+        "3. Sensual, Anatomy & Organ-Action Fidelity: Keep full erotic tension, shame-arousal contrast, organ terms & physical organ actions vivid (avoid medical/textbook terms `粘膜/突起/分泌物/私处/子袋` or flat verbs `触碰/进入/刺激`). Match voice: heroine (`蜜穴/花瓣/花壁/花核/乳尖/子宫口/后庭`) vs antagonist (`淫穴/骚屄/肉棒/龟头/屁眼/奶头`) with visceral actions (`抠挖/揉弄/舔舐/吮吸/挺腰贯入/深抽浅送/抵住花心猛撞/痉挛紧咬/涌出淫水/喷洒精液`).\n"
+        "4. Natural Chinese SFX/cries: Convert kana SFX into idiomatic Chinese sound/cadence (not ザアァ->沙啊啊, あぐっ->啊咕, ぎゃっ->啊嘎, ひぃっ->哈咿, or long stacks like 咕滋滋滋滋); crisp stutters; prefer …… / —— over ～～; zero leftover kana.\n"
+        "5. Keep 「...」, （...）, ……, ——, tags ([r],[l],[p],{w},%s,%d,\\V[n],<...>) & \\r\\n breaks; strip [・・・/词] or [reading/base] ruby brackets to plain Chinese.\n"
+        f"6. Input format is `idx\\tspeaker\\tmessage` ({len(orig)} lines). Return JSON `items` with EXACTLY {len(orig)} objects `{{idx, message}}` (0..{len(orig)-1}); omit `name` unless speaker is unmapped.\n"
         f"{glossary_block}"
-        f"INPUT JSON:\n{payload_text}"
+        f"INPUT:\n{payload_text}"
     )
 
     mgr = get_quota_manager()
@@ -217,7 +260,7 @@ def translate_lines(
                 if not raw_src.strip():
                     msg = raw_src
                 else:
-                    msg = str(dst_e.get("message", "")).strip().replace("\\r\\n", "\r\n")
+                    msg = str(dst_e.get("message", "")).strip().replace("\\r\\n", "\r\n").replace("\\n", "\n").replace("\\t", "\t")
                     if not msg:
                         raise ValueError(f"empty_msg_at_{i}")
                 out_e = {}
@@ -269,6 +312,68 @@ def translate_lines(
     raise RuntimeError(last_err or "unknown_error")
 
 
+def prefill_from_tm(manifest: list[dict], chunks_in: Path, chunks_out: Path, name_map: dict[str, str]) -> int:
+    tm: dict[tuple[str, str], tuple[str | None, str]] = {}
+    for m in manifest:
+        op = chunks_out / m["chunk"]
+        if not op.exists():
+            continue
+        sr = json.loads((chunks_in / m["chunk"]).read_text(encoding="utf-8"))
+        dr = json.loads(op.read_text(encoding="utf-8"))
+        for s_ent, d_ent in zip(sr, dr):
+            if d_ent.get("message") != s_ent.get("message"):
+                tm.setdefault((s_ent.get("name", ""), s_ent["message"]), (d_ent.get("name"), d_ent["message"]))
+    if not tm:
+        return 0
+    filled = 0
+    for m in manifest:
+        op = chunks_out / m["chunk"]
+        if op.exists():
+            continue
+        sr = json.loads((chunks_in / m["chunk"]).read_text(encoding="utf-8"))
+        if all((not s_ent["message"].strip()) or ((s_ent.get("name", ""), s_ent["message"]) in tm) for s_ent in sr):
+            out_rows = []
+            for s_ent in sr:
+                if not s_ent["message"].strip():
+                    out_rows.append(dict(s_ent))
+                    continue
+                tn, tmsg = tm[(s_ent.get("name", ""), s_ent["message"])]
+                row = {}
+                if "name" in s_ent:
+                    raw_n = s_ent["name"]
+                    row["name"] = name_map.get(raw_n) or tn or raw_n
+                row["message"] = tmsg
+                out_rows.append(row)
+            op.write_text(json.dumps(out_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            filled += 1
+    return filled
+
+
+def coalesce_chunks(items: list[dict], chunks_in: Path, max_lines: int, max_chars: int) -> list[list[dict]]:
+    if max_lines <= 0:
+        return [[it] for it in items]
+    groups: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_lines = 0
+    cur_chars = 0
+    for it in items:
+        rows = json.loads((chunks_in / it["chunk"]).read_text(encoding="utf-8"))
+        cnt = len(rows)
+        chars = sum(len(r.get("message", "")) for r in rows)
+        if cur and (cur_lines + cnt > max_lines or cur_chars + chars > max_chars):
+            groups.append(cur)
+            cur = [it]
+            cur_lines = cnt
+            cur_chars = chars
+        else:
+            cur.append(it)
+            cur_lines += cnt
+            cur_chars += chars
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", help="Path to gt_project or game root")
@@ -278,7 +383,9 @@ def main() -> None:
     parser.add_argument("--plan-only", action="store_true", help="Print per-key quota allocation plan and exit without API calls")
     parser.add_argument("--model", default="gemini-4-hydrogen")
     parser.add_argument("--thinking-level", default="HIGH")
-    parser.add_argument("--batch-size", type=int, default=18)
+    parser.add_argument("--batch-size", type=int, default=18, help="Max API requests this wave (0 = drain available pool RPD)")
+    parser.add_argument("--pack-lines", type=int, default=240, help="Coalesce consecutive small chunks up to N lines per request (0 = disable)")
+    parser.add_argument("--pack-chars", type=int, default=16000, help="Max total Japanese chars per coalesced request")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--chunks", nargs="*")
     args = parser.parse_args()
@@ -302,32 +409,41 @@ def main() -> None:
     by_chunk = {m["chunk"]: m for m in manifest}
     skipped = set(json.loads(skipped_path.read_text(encoding="utf-8"))) if skipped_path.exists() else set()
 
+    tm_pre = prefill_from_tm(manifest, chunks_in, chunks_out, name_map)
+    if tm_pre:
+        print(f"TM pre-fill auto-completed {tm_pre} duplicate chunks at 0 API cost.")
+
     if args.chunks:
-        batch = [by_chunk[c] for c in args.chunks if c in by_chunk]
+        todo = [by_chunk[c] for c in args.chunks if c in by_chunk]
+        groups = coalesce_chunks(todo, chunks_in, 0 if len(todo) == 1 else args.pack_lines, args.pack_chars)
     else:
         todo = [m for m in manifest if not (chunks_out / m["chunk"]).exists() and m["chunk"] not in skipped]
-        batch = todo[: args.batch_size]
+        all_groups = coalesce_chunks(todo, chunks_in, args.pack_lines, args.pack_chars)
+        req_budget = mgr.total_remaining_rpd(args.model) if args.batch_size <= 0 else args.batch_size
+        groups = all_groups[: max(0, req_budget)]
 
     if args.plan_only:
-        plan = mgr.plan_workload(len(batch), model=args.model, chunk_names=[m["chunk"] for m in batch])
+        plan = mgr.plan_workload(len(groups), model=args.model, chunk_names=[g[0]["chunk"] for g in groups])
         print(kqm.format_status_report(mgr, args.model))
         print(
-            f"\nBatch Plan: requested={plan['total_requested']} chunks, available={plan['total_available_rpd']} RPD, "
-            f"can_complete_today={plan['can_complete_today']}"
+            f"\nBatch Plan: packed_requests={len(groups)} (covering {sum(len(g) for g in groups)} chunks), "
+            f"available={plan['total_available_rpd']} RPD, can_complete_today={plan['can_complete_today']}"
         )
         for a in plan["allocations"]:
             span = f" -> {a['chunks'][0]}..{a['chunks'][-1]}" if a["chunks"] else ""
             print(f"  [#{a['index']} {a['label']} ({a['masked']})] alloc={a['allocated']}/{a['remaining_rpd']}{span}")
         return
 
-    if not batch:
-        print("No chunks left to translate.")
+    if not groups:
+        print("No chunks left to translate (or 0 remaining RPD in pool).")
         print(kqm.format_status_report(mgr, args.model))
         return
 
+    total_target_chunks = sum(len(g) for g in groups)
     print(
-        f"Translating {len(batch)} chunks with model={args.model}/{args.thinking_level}, "
-        f"keys={len(keys)}, remaining_pool_rpd={mgr.total_remaining_rpd(args.model)}, concurrency={args.concurrency}..."
+        f"Translating {total_target_chunks} chunks via {len(groups)} smart request(s) "
+        f"(pack<={args.pack_lines}L, model={args.model}/{args.thinking_level}, "
+        f"keys={len(keys)}, remaining_pool_rpd={mgr.total_remaining_rpd(args.model)}, concurrency={args.concurrency})..."
     )
     t0 = time.monotonic()
     newly_refused = []
@@ -335,21 +451,30 @@ def main() -> None:
     ok_cnt = 0
     err_cnt = 0
 
-    def worker(item: dict) -> dict:
-        cname = item["chunk"]
-        src_file = item["source_file"]
-        orig = json.loads((chunks_in / cname).read_text(encoding="utf-8"))
+    def worker(group: list[dict]) -> list[dict]:
+        cnames = [g["chunk"] for g in group]
+        label = cnames[0] if len(cnames) == 1 else f"{cnames[0]}..{cnames[-1]}({len(cnames)})"
+        src_file = group[0]["source_file"] if len({g["source_file"] for g in group}) == 1 else "multi"
+        orig_parts = [json.loads((chunks_in / c).read_text(encoding="utf-8")) for c in cnames]
+        orig = [row for part in orig_parts for row in part]
         try:
-            cleaned = translate_lines(args.model, cname, src_file, orig, name_map, glossary, thinking_level=args.thinking_level)
-            (chunks_out / cname).write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding="utf-8")
-            return {"chunk": cname, "source": src_file, "ok": True, "lines": len(cleaned), "sample": cleaned[0]["message"][:36]}
+            cleaned = translate_lines(args.model, label, src_file, orig, name_map, glossary, thinking_level=args.thinking_level)
+            cursor = 0
+            out = []
+            for g, part in zip(group, orig_parts):
+                sl = cleaned[cursor : cursor + len(part)]
+                cursor += len(part)
+                (chunks_out / g["chunk"]).write_text(json.dumps(sl, ensure_ascii=False, indent=2), encoding="utf-8")
+                out.append({"chunk": g["chunk"], "source": g["source_file"], "ok": True, "lines": len(sl), "sample": sl[0]["message"][:36]})
+            return out
         except Exception as exc:
             err = str(exc)
             is_refused = err.startswith("safety_") or "empty_items_refused" in err
-            return {"chunk": cname, "source": src_file, "ok": False, "refused": is_refused, "error": err[:900]}
+            return [{"chunk": g["chunk"], "source": g["source_file"], "ok": False, "refused": is_refused, "error": err[:900]} for g in group]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        results = list(pool.map(worker, batch))
+        nested_results = list(pool.map(worker, groups))
+    results = [r for sub in nested_results for r in sub]
 
     elapsed = max(0.1, time.monotonic() - t0)
     lines_done = 0
@@ -371,10 +496,14 @@ def main() -> None:
         merged_skip = sorted(skipped | set(newly_refused))
         skipped_path.write_text(json.dumps(merged_skip, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    tm_post = prefill_from_tm(manifest, chunks_in, chunks_out, name_map)
+    if tm_post:
+        print(f"Post-wave TM auto-completed {tm_post} duplicate chunks at 0 API cost.")
+
     out_chunks = sorted(chunks_out.glob("chunk_*.json"))
     total_lines = sum(int(m["count"]) for m in manifest)
     total_done = sum(len(json.loads(c.read_text(encoding="utf-8"))) for c in out_chunks)
-    print(f"\nWave finished in {elapsed:.1f}s ({lines_done / elapsed:.2f} lines/s): ok={ok_cnt}/{len(batch)}, refused={len(newly_refused)}, errors={err_cnt}, quota_429={quota_429}")
+    print(f"\nWave finished in {elapsed:.1f}s ({lines_done / elapsed:.2f} lines/s): ok={ok_cnt}/{total_target_chunks}, refused={len(newly_refused)}, errors={err_cnt}, quota_429={quota_429}")
     print(kqm.format_status_report(mgr, args.model))
     print(f"Progress: chunks={len(out_chunks)}/{len(manifest)}, lines={total_done}/{total_lines} ({total_done / total_lines * 100:.2f}%)")
 

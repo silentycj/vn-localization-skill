@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*api_keys*
+*quota_state*.json
+.DS_Store
+Thumbs.db

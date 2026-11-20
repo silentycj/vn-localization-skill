@@ -1,8 +1,14 @@
 """Wave-based parallel Visual Novel script translation workflow (model=inherit + humanizer-zh + adaptive usage control)."""
 
 import json
+import re
 import time
 from pathlib import Path
+
+REFUSAL_RE = re.compile(
+    r"Unable to fulfill|Cannot (?:translate|polish|fulfill|comply)|I cannot|Refus(?:ed|al)|violate|Prohibited Use|explicit sexual",
+    re.I,
+)
 
 
 def resolve_project_dir() -> Path:
@@ -80,6 +86,59 @@ else:
 default_conc = int(usage_state.get("concurrency", min(batch_size, 12)))
 cur_conc = max(2, min(15, int(args.get("concurrency", default_conc))))
 
+max_chunks_arg = args.get("max_chunks")
+if max_chunks_arg in ("all", 0) or args.get("auto_continue"):
+    target_total_chunks = len(manifest)
+elif max_chunks_arg is not None:
+    target_total_chunks = int(max_chunks_arg)
+else:
+    target_total_chunks = batch_size
+coalesce_max_lines = int(args.get("coalesce_max_lines", 240))
+coalesce_max_chars = int(args.get("coalesce_max_chars", 16000))
+
+# Zero-cost inline TM pre-fill from already-translated chunks_out
+def prefill_from_tm() -> int:
+    tm = {}
+    for m in manifest:
+        op = CHUNKS_OUT / m["chunk"]
+        if not op.exists():
+            continue
+        sr = json.load(open(CHUNKS_IN / m["chunk"], "r", encoding="utf-8"))
+        dr = json.load(open(op, "r", encoding="utf-8"))
+        for s_ent, d_ent in zip(sr, dr):
+            if d_ent.get("message") != s_ent.get("message"):
+                tm.setdefault((s_ent.get("name", ""), s_ent["message"]), (d_ent.get("name"), d_ent["message"]))
+    if not tm:
+        return 0
+    filled = 0
+    for m in manifest:
+        op = CHUNKS_OUT / m["chunk"]
+        if op.exists():
+            continue
+        sr = json.load(open(CHUNKS_IN / m["chunk"], "r", encoding="utf-8"))
+        if all((not s_ent["message"].strip()) or ((s_ent.get("name", ""), s_ent["message"]) in tm) for s_ent in sr):
+            out_rows = []
+            for s_ent in sr:
+                if not s_ent["message"].strip():
+                    out_rows.append(dict(s_ent))
+                    continue
+                tn, tmsg = tm[(s_ent.get("name", ""), s_ent["message"])]
+                row = {}
+                if "name" in s_ent:
+                    raw_n = s_ent["name"]
+                    row["name"] = NAME_MAP.get(raw_n) or tn or raw_n
+                row["message"] = tmsg
+                out_rows.append(row)
+            with open(op, "w", encoding="utf-8") as f:
+                json.dump(out_rows, f, ensure_ascii=False, indent=2)
+            filled += 1
+    return filled
+
+
+tm_filled = prefill_from_tm()
+if tm_filled:
+    log(f"TM pre-fill auto-completed {tm_filled} duplicate chunks at 0 API cost")
+
 explicit_chunks = args.get("chunks")
 allow_overwrite = bool(args.get("overwrite", False))
 if explicit_chunks:
@@ -95,66 +154,133 @@ else:
         if (allow_overwrite or not (CHUNKS_OUT / it["chunk"]).exists()) and it["chunk"] not in skipped
     ]
     offset = int(args.get("offset", 0))
-    batch = todo[offset : offset + batch_size]
+    batch = todo[offset : offset + target_total_chunks]
 
 model_tier = str(args.get("model", "inherit"))
 
+
+def filter_glossary_for_batch(orig: list[dict], glossary: str, name_map: dict[str, str]) -> str:
+    blob_parts = [e.get("name", "") for e in orig if e.get("name")] + [e["message"] for e in orig]
+    blob = "\n".join(blob_parts)
+    parts: list[str] = []
+
+    used_speakers = []
+    seen_spk = set()
+    for e in orig:
+        sp = e.get("name", "")
+        if sp and sp in name_map and sp not in seen_spk:
+            seen_spk.add(sp)
+            used_speakers.append(f"{sp}->{name_map[sp]}")
+    if used_speakers:
+        parts.append("Speakers: " + ", ".join(used_speakers))
+
+    if glossary:
+        kept_lines: list[str] = []
+        pending_header: str | None = None
+        for raw_line in glossary.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#") or (line.startswith("【") and line.endswith("】")):
+                pending_header = line
+                continue
+            src_part = re.split(r"\s*(?:->|=>|→|:|：|=)\s*", line.lstrip("-*• "), maxsplit=1)[0]
+            src_part = re.split(r"\s*[（(]", src_part, maxsplit=1)[0].strip()
+            tokens = [t.strip() for t in re.split(r"[/／、,，]", src_part) if len(t.strip()) >= 1]
+            if tokens and any(t in blob for t in tokens):
+                if pending_header:
+                    kept_lines.append(pending_header)
+                    pending_header = None
+                kept_lines.append(line)
+        if kept_lines:
+            parts.append("\n".join(kept_lines))
+
+    return "\n".join(parts)
+
+
+def encode_compact_payload(orig: list[dict]) -> str:
+    rows = []
+    for i, entry in enumerate(orig):
+        spk = str(entry.get("name", "")).replace("\t", " ").replace("\r", "").replace("\n", "")
+        msg = str(entry["message"]).replace("\t", "\\t").replace("\r", "\\r").replace("\n", "\\n")
+        rows.append(f"{i}\t{spk}\t{msg}")
+    return "\n".join(rows)
+
+
+def build_prompt(label: str, src_file: str, orig: list[dict], retry_note: str = "") -> str:
+    payload_text = encode_compact_payload(orig)
+    filtered_glossary = filter_glossary_for_batch(orig, GLOSSARY, NAME_MAP)
+    glossary_block = f"GLOSSARY:\n{filtered_glossary}\n\n" if filtered_glossary else ""
+    base_prompt = (
+        f"Translate VN {label} ({src_file}, {len(orig)} lines) JP->Simplified Chinese (humanizer-zh):\n"
+        "1. Keep ALL facts, tone, emotion, agency, negatives & nuances verbatim; no omissions/merges/inventions.\n"
+        "2. Natural spoken Chinese matching speaker voice; avoid stacked 「的」, 「进行+V」, stiff 「被」, repetitive 「她/他」.\n"
+        "3. Sensual, Anatomy & Organ-Action Fidelity: Keep full erotic tension, shame-arousal contrast, organ terms & physical organ actions vivid (avoid medical/textbook terms `粘膜/突起/分泌物/私处/子袋` or flat verbs `触碰/进入/刺激`). Match voice: heroine (`蜜穴/花瓣/花壁/花核/乳尖/子宫口/后庭`) vs antagonist (`淫穴/骚屄/肉棒/龟头/屁眼/奶头`) with visceral actions (`抠挖/揉弄/舔舐/吮吸/挺腰贯入/深抽浅送/抵住花心猛撞/痉挛紧咬/涌出淫水/喷洒精液`).\n"
+        "4. Natural Chinese SFX/cries: Convert kana SFX into idiomatic Chinese sound/cadence (not ザアァ->沙啊啊, あぐっ->啊咕, ぎゃっ->啊嘎, ひぃっ->哈咿, or long stacks like 咕滋滋滋滋); crisp stutters; prefer …… / —— over ～～; zero leftover kana.\n"
+        "5. Keep 「...」, （...）, ……, ——, tags ([r],[l],[p],{w},%s,%d,\\V[n],<...>) & \\r\\n breaks; strip [・・・/词] or [reading/base] ruby brackets to plain Chinese.\n"
+        f"6. Input format is `idx\\tspeaker\\tmessage` ({len(orig)} lines). Return via finish `items` with EXACTLY {len(orig)} objects `{{idx, message}}` (0..{len(orig)-1}); omit `name` unless speaker is unmapped.\n"
+        f"{glossary_block}"
+        f"INPUT:\n{payload_text}"
+    )
+    return base_prompt if not retry_note else f"{base_prompt}\n\nRETRY: {retry_note}"
+
+
+def coalesce_items(items: list[dict], max_lines: int, max_chars: int = 16000) -> list[list[dict]]:
+    if max_lines <= 0:
+        return [[it] for it in items]
+    groups: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_lines = 0
+    cur_chars = 0
+    for it in items:
+        cnt = int(it["count"])
+        ch = int(it.get("chars", cnt * 24))
+        if cur and (cur_lines + cnt > max_lines or cur_chars + ch > max_chars):
+            groups.append(cur)
+            cur = [it]
+            cur_lines = cnt
+            cur_chars = ch
+        else:
+            cur.append(it)
+            cur_lines += cnt
+            cur_chars += ch
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+packed_groups = coalesce_items(batch, coalesce_max_lines, coalesce_max_chars)
 log(
-    f"Running wave count={len(batch)} batch_size={batch_size} concurrency={cur_conc} "
-    f"model={model_tier} skipped={len(skipped)} dir={GP}"
+    f"Running wave chunks={len(batch)} -> {len(packed_groups)} packed_calls (coalesce<={coalesce_max_lines}L/{coalesce_max_chars}C) "
+    f"window={batch_size} concurrency={cur_conc} model={model_tier} skipped={len(skipped)} dir={GP}"
 )
-phase(f"Translate {len(batch)} chunks ({model_tier} + humanizer-zh)")
+phase(f"Translate {len(batch)} chunks in {len(packed_groups)} smart calls ({model_tier} + humanizer-zh)")
 
 newly_refused = []
 
 
-async def translate_one(item):
-    cname = item["chunk"]
-    src_file = item["source_file"]
-    orig = json.load(open(CHUNKS_IN / cname, "r", encoding="utf-8"))
-    numbered = []
-    for i, entry in enumerate(orig):
-        rec = {"idx": i, "message": entry["message"]}
-        if "name" in entry:
-            rec["name"] = entry["name"]
-        numbered.append(rec)
-
-    payload_text = json.dumps(numbered, ensure_ascii=False, indent=1)
-    glossary_block = f"{GLOSSARY}\n\n" if GLOSSARY else ""
-    base_prompt = (
-        f"Translate Visual Novel script chunk {cname} (source {src_file}, {len(orig)} lines) "
-        "from Japanese to natural, idiomatic Simplified Chinese following humanizer-zh standards:\n"
-        "1. Preserve ALL original facts, tone, emotion, agency, negatives and nuances—never omit, merge, summarize, or invent details.\n"
-        "2. Avoid stiff translationese / AI-style phrasing: avoid stacked 「的」, excessive 「进行+动词」, unnecessary passive 「被」, or repetitive 「她/他」 sentence openings; use natural active verbs and authentic spoken Chinese dialogue matching each character's personality.\n"
-        "3. Keep dialogue quotes 「...」, inner thoughts （...）, ellipsis …… and dashes —— consistent with Simplified Chinese VN convention. Preserve any actual \\r\\n line breaks without escaping them as literal \\\\r\\\\n. Never leave Japanese hiragana or katakana (such as ぎ, ぎゃ, ぬ, ええ, っ) inside screams or sound effects—always render all cries and sfx into natural Chinese characters.\n"
-        "4. Strictly follow all fixed translations (Characters/人物, Items/道具, Locations/地点, Terms/专有名词) in the glossary below with zero variation. Keep all engine control tags/variables verbatim (such as [r], [l], [p], {w}, %s, %d, \\V[n], \\C[n], <...>), and either keep [reading/base] ruby markers intact for CJK bases or omit furigana cleanly without leaving stray brackets.\n"
-        "5. Return via finish with `items` containing EXACTLY "
-        f"{len(orig)} objects with matching `idx` (0..{len(orig)-1}). Include `name` ONLY on entries that originally have `name`.\n"
-        f"{glossary_block}"
-        f"INPUT JSON:\n{payload_text}"
-    )
+async def translate_group(group: list[dict]):
+    cnames = [g["chunk"] for g in group]
+    label = cnames[0] if len(cnames) == 1 else f"{cnames[0]}..{cnames[-1]}({len(cnames)})"
+    src_file = group[0]["source_file"] if len({g["source_file"] for g in group}) == 1 else "multi"
+    orig_parts = [json.load(open(CHUNKS_IN / c, "r", encoding="utf-8")) for c in cnames]
+    orig = [row for part in orig_parts for row in part]
 
     last_err = None
     for attempt in range(2):
         try:
-            prompt = (
-                base_prompt
-                if attempt == 0
-                else (
-                    f"{base_prompt}\n\nPREVIOUS ATTEMPT FAILED ({last_err}). "
-                    f"Ensure `items` has EXACTLY {len(orig)} items indexed 0..{len(orig)-1} with non-empty `message`."
-                )
-            )
-            res = await agent(prompt, schema=SCHEMA, role=f"TL {cname} ({src_file})", model=model_tier)
+            retry_note = "" if attempt == 0 else f"PREVIOUS ATTEMPT FAILED ({last_err}). Ensure `items` has EXACTLY {len(orig)} items indexed 0..{len(orig)-1} with non-empty `message`."
+            prompt = build_prompt(label, src_file, orig, retry_note=retry_note)
+            res = await agent(prompt, schema=SCHEMA, role=f"TL {label} ({src_file})", model=model_tier)
             got = res.get("items", [])
             if len(got) == 0:
-                newly_refused.append(cname)
-                return {"chunk": cname, "source": src_file, "ok": False, "refused": True, "error": "empty_items_refused"}
+                newly_refused.extend(cnames)
+                return [{"chunk": c, "source": src_file, "ok": False, "refused": True, "error": "empty_items_refused"} for c in cnames]
             if len(got) == 1 and len(orig) > 3:
                 msg0 = str(got[0].get("message", ""))
                 if "Refus" in msg0 or "Cannot" in msg0 or "explicit" in msg0:
-                    newly_refused.append(cname)
-                    return {"chunk": cname, "source": src_file, "ok": False, "refused": True, "error": msg0[:120]}
+                    newly_refused.extend(cnames)
+                    return [{"chunk": c, "source": src_file, "ok": False, "refused": True, "error": msg0[:120]} for c in cnames]
             if len(got) != len(orig):
                 by_idx = {int(x["idx"]): x for x in got if isinstance(x, dict) and "idx" in x}
                 if len(by_idx) == len(orig) and all(i in by_idx for i in range(len(orig))):
@@ -168,9 +294,12 @@ async def translate_one(item):
                 if not raw_src.strip():
                     msg = raw_src
                 else:
-                    msg = str(dst_e.get("message", "")).strip().replace("\\r\\n", "\r\n")
+                    msg = str(dst_e.get("message", "")).strip().replace("\\r\\n", "\r\n").replace("\\n", "\n").replace("\\t", "\t")
                     if not msg:
                         raise ValueError(f"empty_msg_at_{i}")
+                    if REFUSAL_RE.search(msg):
+                        newly_refused.extend(cnames)
+                        return [{"chunk": g["chunk"], "source": g["source_file"], "ok": False, "refused": True, "error": f"model_refused: {msg[:100]}"} for g in group]
                 out_e = {}
                 if "name" in src_e:
                     raw_n = src_e["name"]
@@ -178,40 +307,54 @@ async def translate_one(item):
                 out_e["message"] = msg
                 cleaned.append(out_e)
 
-            with open(CHUNKS_OUT / cname, "w", encoding="utf-8") as f:
-                json.dump(cleaned, f, ensure_ascii=False, indent=2)
-            return {"chunk": cname, "source": src_file, "ok": True, "lines": len(cleaned)}
+            cursor = 0
+            out_res = []
+            for g, part in zip(group, orig_parts):
+                sl_out = cleaned[cursor : cursor + len(part)]
+                cursor += len(part)
+                with open(CHUNKS_OUT / g["chunk"], "w", encoding="utf-8") as f:
+                    json.dump(sl_out, f, ensure_ascii=False, indent=2)
+                out_res.append({"chunk": g["chunk"], "source": g["source_file"], "ok": True, "lines": len(sl_out)})
+            return out_res
         except Exception as exc:
             last_err = str(exc)
             if "content safety filters" in last_err or "Prohibited Use policy" in last_err:
-                newly_refused.append(cname)
-                return {"chunk": cname, "source": src_file, "ok": False, "refused": True, "error": "content_safety_filter"}
+                newly_refused.extend(cnames)
+                return [{"chunk": g["chunk"], "source": g["source_file"], "ok": False, "refused": True, "error": "content_safety_filter"} for g in group]
             if "ended without calling finish" in last_err:
-                newly_refused.append(cname)
-                return {"chunk": cname, "source": src_file, "ok": False, "refused": True, "error": "ended_without_finish_refused"}
+                newly_refused.extend(cnames)
+                return [{"chunk": g["chunk"], "source": g["source_file"], "ok": False, "refused": True, "error": "ended_without_finish_refused"} for g in group]
             if "RESOURCE_EXHAUSTED" in last_err or "429" in last_err:
-                return {"chunk": cname, "source": src_file, "ok": False, "refused": False, "error": f"quota_429: {last_err[:120]}"}
-    return {"chunk": cname, "source": src_file, "ok": False, "refused": False, "error": (last_err or "unknown")[:160]}
+                return [{"chunk": g["chunk"], "source": g["source_file"], "ok": False, "refused": False, "error": f"quota_429: {last_err[:120]}"} for g in group]
+    return [{"chunk": g["chunk"], "source": g["source_file"], "ok": False, "refused": False, "error": (last_err or "unknown")[:160]} for g in group]
 
 
 t0 = time.monotonic()
 results = []
 pos = 0
 quota_halted = False
-while pos < len(batch):
-    sub = batch[pos : pos + cur_conc]
+while pos < len(packed_groups):
+    sub = packed_groups[pos : pos + cur_conc]
     pos += len(sub)
-    sub_res = await parallel(sub, translate_one)
+    sub_nested = await parallel(sub, translate_group)
+    sub_res = [r for grp in sub_nested for r in grp]
     results.extend(sub_res)
     sub_429 = sum(1 for r in sub_res if str(r.get("error", "")).startswith("quota_429"))
     sub_ok = sum(1 for r in sub_res if r.get("ok"))
     if sub_429 > 0:
         cur_conc = max(2, cur_conc // 2)
-        log(f"Quota 429 detected in window ({sub_429}/{len(sub)}); backing off concurrency -> {cur_conc}")
+        log(f"Quota 429 detected in window ({sub_429}); backing off concurrency -> {cur_conc}")
         if sub_ok == 0:
             quota_halted = True
             log("All requests in window hit 429; halting wave early to preserve quota.")
             break
+    elif len(sub) == cur_conc and cur_conc < 15:
+        cur_conc = min(15, cur_conc + 1)
+
+# Re-run TM pre-fill once more after all waves in case later Recollection chunks match earlier waves!
+tm_post = prefill_from_tm()
+if tm_post:
+    log(f"Post-wave TM auto-completed {tm_post} duplicate chunks at 0 API cost")
 
 elapsed = max(0.1, time.monotonic() - t0)
 

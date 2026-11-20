@@ -1,7 +1,13 @@
 """Layered slice-down retry workflow for skipped_chunks.json or safety_blocked_segments.json."""
 
 import json
+import re
 from pathlib import Path
+
+REFUSAL_RE = re.compile(
+    r"Unable to fulfill|Cannot (?:translate|polish|fulfill|comply)|I cannot|Refus(?:ed|al)|violate|Prohibited Use|explicit sexual",
+    re.I,
+)
 
 
 def resolve_project_dir() -> Path:
@@ -115,9 +121,11 @@ async def run_slice(task):
         "from Japanese to natural, idiomatic Simplified Chinese following humanizer-zh standards:\n"
         "1. Preserve ALL original facts, tone, emotion, agency, negatives and nuances—never omit, merge, summarize, or invent details.\n"
         "2. Avoid stiff translationese / AI-style phrasing: avoid stacked 「的」, excessive 「进行+动词」, unnecessary passive 「被」, or repetitive 「她/他」 sentence openings; use natural active verbs and authentic spoken Chinese dialogue matching each character's personality.\n"
-        "3. Keep dialogue quotes 「...」, inner thoughts （...）, ellipsis …… and dashes —— consistent with Simplified Chinese VN convention. Preserve any actual \\r\\n line breaks without escaping them as literal \\\\r\\\\n. Never leave Japanese hiragana or katakana (such as ぎ, ぎゃ, ぬ, ええ, っ) inside screams or sound effects—always render all cries and sfx into natural Chinese characters.\n"
-        "4. Strictly follow all fixed translations (Characters/人物, Items/道具, Locations/地点, Terms/专有名词) in the glossary below with zero variation. Keep all engine control tags/variables verbatim (such as [r], [l], [p], {w}, %s, %d, \\V[n], \\C[n], <...>), and either keep [reading/base] ruby markers intact for CJK bases or omit furigana cleanly without leaving stray brackets.\n"
-        "5. Return via finish with `items` containing EXACTLY "
+        "3. Expressive Literary & Sensual VN, Anatomy & Organ-Action Fidelity (Anti-Textbook / Anti-Sanitizing Rule): Preserve the exact erotic tension, shame-arousal contrast, anatomical/organ descriptions, and **physical actions on/by organs** of the Japanese original using vivid, idiomatic Chinese Galgame prose—NEVER flatten sensual scenes into dry medical jargon, vague euphemisms (`粘膜`, `突起`, `分泌物`, `直进直出`, vague `部位`/`那东西`/`私处`/`子袋`), or bland bloodless verbs (`触碰`/`进入`/`刺激`/`移动`/`摩擦`). Render organ actions viscerally faithful to `jp`: fingers/tongue (`抠挖/揉弄/拨弄/碾磨/舔舐/吮吸/卷裹/掰开`), penetration/thrusting (`挺腰贯入/顶开嫩肉/深抽浅送/抵住花心猛撞/狠狠肏弄`), and involuntary organ reactions (`痉挛紧咬/翕张抽搐/泛红肿胀/涌出湿热淫水/喷洒滚烫精液`). Match speaker voice: soft/shameful heroine perspective (`蜜穴/花穴/湿嫩花瓣/紧致花壁/敏感花核·阴蒂/挺立乳尖/软嫩乳房/娇嫩子宫口/后庭`) vs crude/lewd antagonist taunts (`淫穴/小穴/骚屄/肉棒/龟头/肉茎/屁眼/奶头`).\n"
+        "4. Natural Chinese Sound Effects (SFX) & Vocalizations: NEVER transliterate Japanese kana SFX syllable-by-syllable into clunky calques (e.g. avoid ザアァ->沙啊啊, あぐっ->啊咕, ぎゃっ->啊嘎, ぐえっ->咕呃, ひぃっ->哈咿, or mechanical stacks like 咕滋滋滋滋/嗦溜溜溜). Match real Chinese VN/light-novel sound texture & cadence (风/雨->沙沙/哗啦, 撞击->闷响/扑通, 痛哼/惊叫->唔呃/痛哼/呀啊/呜, 黏腻水声->咕啾/噗嗤/滋噗自然交替), keep stutters crisp (avoid repetitive 啊、啊、啊), and prefer …… / —— over excessive Japanese ～～.\n"
+        "5. Keep dialogue quotes 「...」, inner thoughts （...）, ellipsis …… and dashes —— consistent with Simplified Chinese VN convention. Preserve any actual \\r\\n line breaks without escaping them as literal \\\\r\\\\n. Never leave any Japanese hiragana or katakana inside dialogue or SFX.\n"
+        "6. Strictly follow all fixed translations (Characters/人物, Items/道具, Locations/地点, Terms/专有名词) in the glossary below with zero variation. Keep all engine control tags/variables verbatim (such as [r], [l], [p], {w}, %s, %d, \\V[n], \\C[n], <...>), and strip [・・・/词语] or [reading/base] furigana/emphasis markers cleanly to plain Chinese without leaving stray brackets or kana.\n"
+        "7. Return via finish with `items` containing EXACTLY "
         f"{len(sl)} objects with matching `idx` (0..{len(sl)-1}). Include `name` ONLY on entries that originally have `name`.\n"
         f"{glossary_block}"
         f"INPUT JSON:\n{payload_text}"
@@ -148,6 +156,8 @@ async def run_slice(task):
                 msg = str(dst_e.get("message", "")).strip().replace("\\r\\n", "\r\n")
                 if not msg:
                     return {"chunk": cname, "s": s, "e": e, "ok": False, "reason": f"empty_msg_at_{i}"}
+                if REFUSAL_RE.search(msg):
+                    return {"chunk": cname, "s": s, "e": e, "ok": False, "reason": f"model_refused: {msg[:120]}"}
             out_e = {}
             if "name" in src_e:
                 raw_n = src_e["name"]
