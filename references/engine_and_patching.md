@@ -113,7 +113,7 @@ Japanese engines typically request Shift-JIS raster/TrueType defaults that clip,
 
 1. **Append Scenario Extraction & Unified `sjis_ext.bin` Repacking (`append.ini`)**:
    - CSystem titles with append scenarios (`append.ini` -> `app/*.dat` + `app/*.app`) store extra `.a0` scripts inside the `.app` archive rather than `Arc04.dat`.
-   - `CSystemArc.exe unpack` can throw `ArgumentOutOfRangeException` on delta image entries (`type b0`) when unpacking `.app` standalone, aborting before `.a0` entries. Load `CSystemArc.ArchiveReader` via .NET reflection to extract `.a0` entries directly (`Type == 'a'`).
+   - `CSystemArc.exe unpack` can throw `ArgumentOutOfRangeException` on delta image entries (`type b0`) when unpacking `.app` standalone, aborting before `.a0` entries. Use [csystem_append.py](../scripts/csystem_append.py) (`extract` / `pack`, powered by `CSystemArc.ArchiveReader` / `ArchiveWriter.WriteIndex()` via .NET reflection) to extract `.a0` entries directly (`Type == 'a'`) and repack rebuilt `.a0` files back into `.app` / `.dat`.
    - Stage **both** main-game (`Arc04.dat`) and append (`.app`) JSONs in a single `VNTextPatch.exe insertlocal` pass so `sjis_ext.bin` covers every CJK character across both campaigns. Reconstruct append `.a0` files with `_reconstruct_a0`, append them to `.app`, and update `Offset`/`CompressedSize`/`UncompressedSize` via `CSystemArc.ArchiveWriter.WriteIndex()`.
 2. **Proxy DLL Fallback, Complete Exports & `codeCursor` Alignment**:
    - When an unpacked EXE drops `VERSION.dll` from its IAT (or when appending an RWX `.patch` section + new OEP triggers AV false positives such as `Trojan:Win32/Wacatac.B!ml`), use an IAT-imported non-KnownDLL proxy such as `winmm.dll` without modifying the EXE.
