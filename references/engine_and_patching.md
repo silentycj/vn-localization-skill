@@ -108,3 +108,17 @@ Japanese engines typically request Shift-JIS raster/TrueType defaults that clip,
    - Detour the engine glyph blit loop to replace hard `dstA = 0xFF` alpha snapping with smooth Porter-Duff Over compositing (`outA = min(255, srcA * (255 - dstA) / 255 + dstA)`), yielding crisp, halo-free Chinese dialogue text and outlines over bright and dark backgrounds alike.
 5. **Visual & Runtime Verification**:
    - Launch the patched EXE directly inside `game_portable/` on Simplified Chinese Windows (no LE, no registry) and verify dialogue rendering with tricky strokes (`算`, `管`, spaces) via live `GetGlyphOutlineA` checks or captured screenshots.
+
+## CSystem Append Archives (`.app`/`.dat`) & Proxy DLL Hardening
+
+1. **Append Scenario Extraction & Unified `sjis_ext.bin` Repacking (`append.ini`)**:
+   - CSystem titles with append scenarios (`append.ini` -> `app/*.dat` + `app/*.app`) store extra `.a0` scripts inside the `.app` archive rather than `Arc04.dat`.
+   - `CSystemArc.exe unpack` can throw `ArgumentOutOfRangeException` on delta image entries (`type b0`) when unpacking `.app` standalone, aborting before `.a0` entries. Load `CSystemArc.ArchiveReader` via .NET reflection to extract `.a0` entries directly (`Type == 'a'`).
+   - Stage **both** main-game (`Arc04.dat`) and append (`.app`) JSONs in a single `VNTextPatch.exe insertlocal` pass so `sjis_ext.bin` covers every CJK character across both campaigns. Reconstruct append `.a0` files with `_reconstruct_a0`, append them to `.app`, and update `Offset`/`CompressedSize`/`UncompressedSize` via `CSystemArc.ArchiveWriter.WriteIndex()`.
+2. **Proxy DLL Fallback, Complete Exports & `codeCursor` Alignment**:
+   - When an unpacked EXE drops `VERSION.dll` from its IAT (or when appending an RWX `.patch` section + new OEP triggers AV false positives such as `Trojan:Win32/Wacatac.B!ml`), use an IAT-imported non-KnownDLL proxy such as `winmm.dll` without modifying the EXE.
+   - Forward **all** exports of the target system DLL (e.g., all 192 exports of `SysWOW64\winmm.dll`, not only the 5 statically imported `time*` functions): DirectX/audio components (`d3dx9_42.dll`, `dsound.dll`) resolve additional exports via `GetProcAddress` and can fail (e.g., `D3DXCreateFontIndirect FALSE`) if the proxy is incomplete.
+   - Set `codeCursor = (exports.Length * 8 + 15) & ~15` (and shift `dataCursor` accordingly) so export jump stubs never overwrite `DllMain` or hook code (`0xc0000142`).
+3. **Full Win32 `DIALOGEX` & Common Control Localization**:
+   - Hook `TextOutA` -> `TextOutW`, `SetDlgItemTextA` -> `SetDlgItemTextW`, and `SendMessageA` -> `SendMessageW` for `WM_SETTEXT` (`0x000C`), `CB_ADDSTRING`/`CB_INSERTSTRING`, `LB_ADDSTRING`/`LB_INSERTSTRING`, `TCM_INSERTITEMA` (`0x1307` -> `0x133E`), `LVM_INSERTCOLUMNA` (`0x101B` -> `0x1061`), and `LVM_INSERTITEMA`/`LVM_SETITEMA`/`LVM_SETITEMTEXTA` (`0x1007`/`0x1006`/`0x102E` -> `*W`).
+   - To localize Unicode `DIALOGEX` templates in `.rsrc` at runtime without patching the EXE, hook `ShowWindow` filtered strictly to the `#32770` dialog class (`GetClassNameA`) + `EnumChildWindows` (`GetWindowTextW` -> `UiTableW` -> `SetWindowTextW`), avoiding any per-frame traversal overhead on the main game window.
