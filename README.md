@@ -30,11 +30,12 @@
 vn-localization/
 ├── SKILL.md                         # 技能主入口、核心不变量与 6 步工作流说明
 ├── README.md                        # 仓库说明文档与版本概要
-├── CHANGELOG.md                     # 版本迭代记录（v1.0.0 -> v1.2.0）
+├── CHANGELOG.md                     # 版本迭代记录（v1.0.0 -> v1.2.2）
 ├── references/
 │   ├── multi_engine_guide.md        # 13 类主流 Galgame 引擎解包/注入/字体/UI 通用对照表
 │   └── engine_and_patching.md       # 工具参数、GalTransl 词表规范、PE/字体/存档/对话框 Hook 与防死循环打包细节
 └── scripts/
+    ├── csystem_append.py            # CSystem 追加篇 (.dat + .app) 脚本提取与幂等回封工具
     ├── translate_wave.py            # 实时用量自适应波次并行翻译脚本 (run_workflow)
     ├── retry_blocked.py             # 拒翻分块分层切片重试与安全隔离脚本 (run_workflow)
     ├── key_quota_manager.py         # AI Studio 单 Key/项目额度分配、60s 滑窗限流与 PT 零点重置管理器
@@ -47,6 +48,8 @@ vn-localization/
 
 ## 版本迭代概要（详见 [CHANGELOG.md](./CHANGELOG.md)）
 
+- **v1.2.2 (2026-11-22)**：新增 CSystem 追加篇（`append.ini` / `.dat` + `.app`）提取与幂等回封脚本 `csystem_append.py`；补充主篇与追加篇统一 `sjis_ext.bin` 生成规范、192 导出全量 `winmm.dll` 代理（规避 `D3DXCreateFontIndirect FALSE` 与 `0xc0000142`）以及 `TextOutA`/`SetDlgItemTextA`/`SendMessageA` + `#32770` `ShowWindow` 对话框全控件汉化方案。
+- **v1.2.1 (2026-11-20)**：新增 240 行智能合批、紧凑 `idx\tspeaker\tmessage` 载荷与按批词表过滤、自然拟声词与官能描写保真规范，以及逐行 `REFUSAL_RE` 防拒翻覆盖保护。
 - **v1.2.0 (2026-11-20)**：新增 AI Studio 逐 Key / 按 Project 共享池额度管理器 `key_quota_manager.py`（`00:00 PT` 自动清零、60s RPM/TPM 滑窗、`--reserve`/`--cap`、零损耗 `check-models` 与分块预分配 `plan`）；补充 Save/Load 存档屏 `DrawTextA`/`DrawTextExA`/`ExtTextOutA` + `sjis_ext.bin` 解码防乱码方案、特典衍生版 EXE VA 复核与第三方补丁冲突规范；升级 `audit_scripts.py` 对 `work_*` 变体与 `[・・・/...]` 着重号注音残留的检测。
 - **v1.1.0 (2026-11-16)**：扩展至 13 类主流 VN 引擎通用指南（`multi_engine_guide.md`），新增回想副本免 API 同步/交叉找回（`sync_recall_tm.py`）与 AI Studio 多 Key REST 翻译/切片工具，完善 Win32 `DIALOGEX` 动态控件 GBK 修复与 `\u3000` 空行保留。
 - **v1.0.0 (2026-11-16)**：初始发布完整 CSystem + REA + 独立去注册表/去 LE 便携版 + 4x 超采样字体渲染 + `run_workflow` 分层拒翻剥离 + `1:1` 防死循环核对闭环。

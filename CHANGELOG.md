@@ -4,6 +4,20 @@ All notable changes to the **vn-localization** skill are documented in this file
 
 ---
 
+## [1.2.2] - 2026-11-22
+
+### Added
+- **CSystem Append Archive Extractor & Repacker** ([`scripts/csystem_append.py`](./scripts/csystem_append.py)):
+  - Added `extract` and `pack` CLI subcommands powered by `CSystemArc.ArchiveReader` / `ArchiveWriter.WriteIndex()` via .NET reflection, extracting `.a0` scripts directly from `append.ini` (`.dat` + `.app`) archives without crashing on `type b0` delta images, and appending rebuilt `.a0` files idempotently back into `.app` / `.dat`.
+
+### Changed & Fixed
+- **Unified `sjis_ext.bin` & Complete-Export `winmm.dll` Proxy Hardening** ([`SKILL.md`](./SKILL.md), [`references/engine_and_patching.md`](./references/engine_and_patching.md)):
+  - Documented staging both main-game (`Arc04.dat`) and append (`.app`) JSONs in one `VNTextPatch insertlocal` pass so `sjis_ext.bin` covers every CJK glyph across both campaigns.
+  - Documented using a complete-export `winmm.dll` proxy (all 192 `SysWOW64\winmm.dll` exports, `codeCursor` aligned past `exports * 8`) when unpacked EXEs drop `VERSION.dll` or trigger AV false positives on `.patch` (`Trojan:Win32/Wacatac.B!ml`), avoiding `D3DXCreateFontIndirect FALSE` and `0xc0000142`.
+  - Documented full Win32 `DIALOGEX` & common-control localization hooks (`TextOutA`, `SetDlgItemTextA`, `SendMessageA` for `WM_SETTEXT`/`CB_*`/`LB_*`/`TCM_INSERTITEMA`/`LVM_*`, plus `#32770`-filtered `ShowWindow` + `EnumChildWindows`).
+
+---
+
 ## [1.2.1] - 2026-11-20
 
 ### Added & Changed
