@@ -4,6 +4,17 @@ All notable changes to the **vn-localization** skill are documented in this file
 
 ---
 
+## [1.2.3] - 2026-11-22
+
+### Fixed & Documented
+- **CSystem `EnumFontFamiliesExA` Callback & CRT `0xc0000417` Guard** ([`references/engine_and_patching.md`](./references/engine_and_patching.md)):
+  - Documented patching the CSystem `EnumFontFamiliesExA` callback (`lfCharSet == 0x80` -> `0x86`) and default `"ＭＳ ゴシック"` vector search (`jz found` -> `jmp found`) alongside setting `lfFaceName = "Microsoft YaHei"` in `Hook_EnumFontFamiliesExA`, preventing empty `std::vector<LOGFONTA>` `_invalid_parameter_noinfo` (`0xc0000417`) crashes on CP936 Windows.
+  - Documented hooking `GetACP`/`GetOEMCP` -> `932`, `GetLocaleInfoA` -> `0x0411`, `render.dll!D3DXCreateFontA`, and `MENUEX_TEMPLATE` (`ver=1`) + `DIALOGEX`/`DIALOG` via `FindResourceA`/`LoadResource`/`SizeofResource` (noting `imm32` `0x81` comparison for resource IDs `>= 128`).
+- **Stripped-Ruby `.a0` `0xfe` Terminator Rule** ([`references/engine_and_patching.md`](./references/engine_and_patching.md)):
+  - Clarified checking `b"\xff\xff" not in new_raw` (rebuilt chunk) so `.a0` `S` chunks whose original `\xff\xff` ruby tags were stripped by `VNTextPatch` always receive a trailing `0xfe`.
+
+---
+
 ## [1.2.2] - 2026-11-22
 
 ### Added
