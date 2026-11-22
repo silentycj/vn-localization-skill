@@ -14,7 +14,7 @@ All notable changes to the **vn-localization** skill are documented in this file
 - **Unified `sjis_ext.bin` & Complete-Export `winmm.dll` Proxy Hardening** ([`SKILL.md`](./SKILL.md), [`references/engine_and_patching.md`](./references/engine_and_patching.md)):
   - Documented staging both main-game (`Arc04.dat`) and append (`.app`) JSONs in one `VNTextPatch insertlocal` pass so `sjis_ext.bin` covers every CJK glyph across both campaigns.
   - Documented using a complete-export `winmm.dll` proxy (all 192 `SysWOW64\winmm.dll` exports, `codeCursor` aligned past `exports * 8`) when unpacked EXEs drop `VERSION.dll` or trigger AV false positives on `.patch` (`Trojan:Win32/Wacatac.B!ml`), avoiding `D3DXCreateFontIndirect FALSE` and `0xc0000142`.
-  - Documented full Win32 `DIALOGEX` & common-control localization hooks (`TextOutA`, `SetDlgItemTextA`, `SendMessageA` for `WM_SETTEXT`/`CB_*`/`LB_*`/`TCM_INSERTITEMA`/`LVM_*`, plus `#32770`-filtered `ShowWindow` + `EnumChildWindows`).
+  - Documented full Win32 `DIALOGEX` & common-control localization hooks (`TextOutA`, `SetDlgItemTextA`, `SendMessageA` for `WM_SETTEXT`/`CB_*`/`LB_*`/`TCM_INSERTITEMA`/`LVM_*`, plus `#32770`-filtered `ShowWindow` + `EnumChildWindows`), noting that omitting the `#32770` class filter causes severe main-window traversal lag whereas `4x` `GetGlyphOutlineW` itself only costs ~`142 ms` / 1,000 glyphs.
 
 ---
 
