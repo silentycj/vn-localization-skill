@@ -10,8 +10,10 @@ All notable changes to the **vn-localization** skill are documented in this file
 - **2017+ CSystem D2D/DWrite/GDI Variant & `data/` Subfolder Layout** ([`SKILL.md`](./SKILL.md), [`references/engine_and_patching.md`](./references/engine_and_patching.md)):
   - Documented newer CSystem titles (e.g., *Shin Inyouchuu*) that omit `render.dll` and `GetGlyphOutlineA` in favor of `d2d1.dll` / `DWrite.dll` / `GdiPlus.dll` / `ExtTextOutA`: hook `MultiByteToWideChar` (`CodePage` `0`/`1`/`932`, `cbMultiByte == -1`) via `DecodeSjisExtToUtf16` and guard `lpString == NULL || c == 0` in `Hook_ExtTextOutA` (`CDC::FillSolidRect`).
   - Documented NTFS hardlinking (`mklink /H`) for `Arc05.dat`/`Arc05a.dat`/`Arc06.dat` and directory junction (`mklink /J`) for `media/` when a rip puts data archives in `data/` while also shipping an EXE at the root, preventing `CFile::Seek` -> `0xC0000409` crashes on double-click.
-- **Optional Machine-Translation Fallback for Stubborn Blocked Lines** ([`SKILL.md`](./SKILL.md)):
-  - Documented using a post-processed NMT fallback (preserving `\r\n` and `name_map`) exclusively for the tiny fraction of lines still blocked after fine-grained `retry_blocked.py` slicing when 100% coverage is requested.
+- **Default API Key Priority, Google Translate Fallback & GitHub Sync Convention** ([`SKILL.md`](./SKILL.md), [`README.md`](./README.md)):
+  - Documented prioritizing external API key scripts (`api_translate_wave.py` / `api_retry_blocked.py`) when a `--keys-file` is provided (and asking the user before falling back to IDE quota if unavailable).
+  - Documented using a post-processed Google Translate (`translate.googleapis.com`) fallback (preserving `\r\n` and `name_map`) exclusively for the tiny fraction of lines still blocked after fine-grained `retry_blocked.py` slicing when 100% coverage is requested.
+  - Documented that any skill update pushed to GitHub must update `SKILL.md`, `CHANGELOG.md`, and `README.md` together.
 
 ---
 
