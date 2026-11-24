@@ -149,4 +149,9 @@ Verify and finalize the directly runnable localized build deliverable (adapting 
    ```
    Confirm `0` errors: JSON row parity, `name_map` integrity, no literal `\\r\\n`/`\\n`, placeholder/tag parity (`%s`/`%d`, `{tag}`, `\V[n]`), broken `[reading/base]` ruby tags, and—when CSystem `.a0` binaries are present—byte-identical untranslated files, 1:1 chunk counts/`M` opcodes/`<4c> N(0)` jump targets, and `0xfe` terminators (`--json-only` skips CSystem `.dat` unpacking on non-CSystem engines automatically).
 3. Ensure the portable build (EXE/launcher, repacked data, font assets / `sjis_ext.bin`, relative `save/` paths) runs directly inside `game_portable/` without external injectors, registry setup, or Locale Emulator (LE).
-4. Launch-test the final localized build directly inside `game_portable/` (verifying startup, story + Recollection/Gallery menus, Config dialogs/dropdowns, and CJK glyph rendering clarity) and run [check_progress.py](./scripts/check_progress.py) before reporting completion.
+4. **EXE & Runtime Verification Checklist**:
+   - Launch-test the final localized EXE directly inside `game_portable/` (without LE or registry) and verify:
+     - Main window title and menu bar (`GetMenu` / `GetMenuStringW`) are localized without Japanese residue.
+     - Open Config (`#32770`) dialogs and inspect `SysTabControl32` tabs, `ComboBox` items, and `Edit` boxes (`EnumChildWindows` + `SendMessageW`) to ensure `.rdata` strings and `TCM_INSERTITEMA`/`CB_ADDSTRING` hooks do not produce `????` or stack-garbage mojibake.
+     - Enter Story and Recollection / CG Gallery modes, verify CJK glyph rendering clarity, and check Windows Event Log (`Application` level-2 errors) for any `0xc0000409` / `0xe06d7363` faults.
+   - Run [check_progress.py](./scripts/check_progress.py) before reporting completion.
