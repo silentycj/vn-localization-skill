@@ -15,6 +15,9 @@ All notable changes to the **vn-localization** skill are documented in this file
   - Documented using a post-processed Google Translate (`translate.googleapis.com`) fallback (preserving `\r\n` and `name_map`) exclusively for the tiny fraction of lines still blocked after fine-grained `retry_blocked.py` slicing when 100% coverage is requested.
   - Documented that any skill update pushed to GitHub must update `SKILL.md`, `CHANGELOG.md`, and `README.md` together.
 
+- **EXE & Runtime Verification Checklist** ([`SKILL.md`](./SKILL.md)):
+  - Added explicit runtime verification steps for localized menu bars (`LoadMenuW`), `#32770` Config dialog controls (`SysTabControl32` / `ComboBox` / `Edit` mojibake checks), Story & Recollection entry, and Windows Application Event Log (`0xc0000409` / `0xe06d7363`) inspection.
+
 ---
 
 ## [1.2.3] - 2026-11-22
