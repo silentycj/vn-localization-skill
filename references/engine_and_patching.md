@@ -122,3 +122,12 @@ Japanese engines typically request Shift-JIS raster/TrueType defaults that clip,
 3. **Full Win32 `DIALOGEX` & Common Control Localization**:
    - Hook `TextOutA` -> `TextOutW`, `SetDlgItemTextA` -> `SetDlgItemTextW`, and `SendMessageA` -> `SendMessageW` for `WM_SETTEXT` (`0x000C`), `CB_ADDSTRING`/`CB_INSERTSTRING`, `LB_ADDSTRING`/`LB_INSERTSTRING`, `TCM_INSERTITEMA` (`0x1307` -> `0x133E`), `LVM_INSERTCOLUMNA` (`0x101B` -> `0x1061`), and `LVM_INSERTITEMA`/`LVM_SETITEMA`/`LVM_SETITEMTEXTA` (`0x1007`/`0x1006`/`0x102E` -> `*W`).
    - To localize Unicode `DIALOGEX` templates in `.rsrc` at runtime without patching the EXE, hook `ShowWindow` filtered strictly to the `#32770` dialog class (`GetClassNameA`) + `EnumChildWindows` (`GetWindowTextW` -> `UiTableW` -> `SetWindowTextW`). Without the `#32770` filter, `ShowWindow` calls on the main game window trigger continuous `EnumChildWindows` traversals and cause severe startup/runtime lag; with `#32770` filtering enabled, lag disappears completely (and 4× supersampled `GetGlyphOutlineW` itself only costs ~`142 ms` per 1,000 glyphs, so no offline `glyph_cache.bin` is needed).
+
+## Newer CSystem (2017+ D2D/DWrite/GDI Without `render.dll`) & `data/` Layout
+
+1. **No `render.dll` / No `GetGlyphOutlineA` Variant**:
+   - Newer CSystem titles (e.g., *Shin Inyouchuu*) drop `render.dll` and `GetGlyphOutlineA` and instead use `d2d1.dll`, `DWrite.dll`, `GdiPlus.dll`, `CreateFontIndirectA`, `EnumFontFamiliesExA`, and `ExtTextOutA`/`TextOutA`/`DrawTextA`.
+   - Hook `MultiByteToWideChar` (`CodePage` `0`/`1`/`932`, `cbMultiByte == -1`) via `DecodeSjisExtToUtf16` (calling the resolved `p_MultiByteToWideChar` directly to avoid recursion), and guard `lpString == NULL || c == 0` in `Hook_ExtTextOutA` (used by MFC `CDC::FillSolidRect`) before forwarding to `ExtTextOutW`.
+   - Patch `EnumFontFamiliesExA` setup/callback `0x80` (`SHIFTJIS_CHARSET`) -> `0x86` (`GB2312_CHARSET`) and `"ＭＳ ゴシック"` search branches so `std::vector<LOGFONTA>` accepts `Microsoft YaHei`.
+2. **`data/` Subfolder Rips (`Arc05.dat`/`Arc06.dat`)**:
+   - Some CSystem rips ship `ShinInyou.exe` in both root and `data/`, while `Arc05.dat`/`Arc05a.dat`/`Arc06.dat`/`media/` only exist in `data/`. Launching root EXE without `Arc05*` in `cwd` triggers `CFile::Seek` -> `CAtlException` (`0xC0000409`). Hardlink (`mklink /H`) `Arc05*`/`Arc06*` and junction (`mklink /J`) `media` into root (0 extra disk space) so both root and `data/` EXEs launch cleanly.
