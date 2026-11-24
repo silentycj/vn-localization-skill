@@ -30,7 +30,7 @@
 vn-localization/
 ├── SKILL.md                         # 技能主入口、核心不变量与 6 步工作流说明
 ├── README.md                        # 仓库说明文档与版本概要
-├── CHANGELOG.md                     # 版本迭代记录（v1.0.0 -> v1.2.2）
+├── CHANGELOG.md                     # 版本迭代记录（v1.0.0 -> v1.2.4）
 ├── references/
 │   ├── multi_engine_guide.md        # 13 类主流 Galgame 引擎解包/注入/字体/UI 通用对照表
 │   └── engine_and_patching.md       # 工具参数、GalTransl 词表规范、PE/字体/存档/对话框 Hook 与防死循环打包细节
